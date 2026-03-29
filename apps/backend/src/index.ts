@@ -11,10 +11,39 @@ import type { ApiResponse, HealthCheck, User } from "shared";
 const tokenStore = new Map<string, { access_token: string; refresh_token?: string }>();
 
 const app = new Elysia()
-  .use(cors({ origin: ["http://localhost:5173", "http://localhost:5174"], credentials: true }))
+  // !!! modifikasi CORS agar dapat di akses oleh web frontend deployment https
+  .use(
+    cors({
+      origin: process.env.FRONTEND_URL || "http://localhost:5173",
+      credentials: true, // WAJIB untuk /auth/me yang mengecek session/cookie
+      allowedHeaders: ["Content-Type", "Authorization"]
+    })
+  )
   .use(swagger())
   .use(cookie())
 
+  .onRequest(({ request, set }) => {
+    const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/users")) {
+      const origin = request.headers.get("origin");
+      const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:5173";
+      const key = url.searchParams.get("key");
+
+      // 1. Izinkan jika datang dari Frontend resmi (AJAX/Fetch)
+      if (origin === frontendUrl) {
+        return;
+      }
+
+      // 2. Jika tidak dari Frontend, WAJIB cek API_KEY
+      // Ini akan menangkap akses langsung browser, Postman, cURL, dll.
+      if (key !== process.env.API_KEY) {
+        set.status = 401;
+        return { message: "Unauthorized: Access denied without valid API Key" };
+      }
+    }
+  })
+  
   // Health check
   .get("/", (): ApiResponse<HealthCheck> => ({
     data: { status: "ok" },
@@ -63,9 +92,16 @@ const app = new Elysia()
     // Set cookie session
     session.value = sessionId;
     session.maxAge = 60 * 60 * 24; // 1 hari
+    session.path = "/";
+
+    // !!! Tambahkan KONFIGURASI PRODUCTION
+    session.httpOnly = true;
+    session.secure = true;    // WAJIB: Cookie hanya dikirim lewat HTTPS
+    session.sameSite = "none"; // WAJIB: Agar cookie bisa dikirim antar domain berbeda
 
     // Redirect ke frontend
-    return redirect("http://localhost:5173/classroom");
+    // !!! ubah url frontend jadi env var (lakukan ke semua file di apps/backend), contoh:
+    return redirect(`${process.env.FRONTEND_URL}/classroom`);
   })
 
   // Cek status login
@@ -133,9 +169,14 @@ const app = new Elysia()
     return { data: result, message: "Course submissions retrieved" };
   })
 
-  .listen(3000);
+if (process.env.NODE_ENV != "production") {
+  app.listen(3000);
+  console.log(`🦊 Backend → http://localhost:3000`);
+  console.log(`🦊 FRONTEND_URL → ${process.env.FRONTEND_URL}`); // pembeda .env.development & .env.production
+  console.log(`🦊 DATABASE_URL: ${process.env.DATABASE_URL}`); // pembeda development & production
+  console.log(`🦊 GOOGLE_REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI}`); // dari file .env
+}
 
-console.log(`🦊 Backend → http://localhost:${app.server?.port}`);
-console.log(`📖 Swagger → http://localhost:${app.server?.port}/swagger`);
-
+// !!! tambahkan export app agar Elysia dapat dibaca Vercel serverless.
+export default app;
 export type App = typeof app;
